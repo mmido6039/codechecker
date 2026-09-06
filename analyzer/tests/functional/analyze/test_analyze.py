@@ -621,6 +621,70 @@ class TestAnalyze(unittest.TestCase):
         self.__analyze_incremental(simple_file_content, build_json,
                                    reports_dir, 1, 0)
 
+    def test_analysis_time_statistics(self):
+        """
+        The analysis time of the translation units is measured and written
+        into the metadata file.
+        """
+        build_json = os.path.join(self.test_workspace, "build_duration.json")
+        reports_dir = os.path.join(self.test_workspace, "reports_duration")
+
+        source_files = []
+        build_log = []
+        for i in range(2):
+            source_file = os.path.join(
+                self.test_workspace, f"duration{i}.cpp")
+            with open(source_file, 'w',
+                      encoding="utf-8", errors="ignore") as source:
+                source.write("int main() { return 0; }")
+
+            source_files.append(source_file)
+            build_log.append({"directory": self.test_workspace,
+                              "command": "g++ -c " + source_file,
+                              "file": source_file})
+
+        with open(build_json, 'w',
+                  encoding="utf-8", errors="ignore") as outfile:
+            json.dump(build_log, outfile)
+
+        analyze_cmd = [self._codechecker_cmd, "analyze", build_json,
+                       "--analyzers", "clangsa", "-o", reports_dir]
+
+        process = subprocess.Popen(
+            analyze_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=self.test_dir,
+            encoding="utf-8",
+            errors="ignore")
+        out, _ = process.communicate()
+
+        self.assertEqual(process.returncode, 0)
+        self.assertIn("Analysis time of clangsa:", out)
+
+        with open(os.path.join(reports_dir, "metadata.json"), 'r',
+                  encoding="utf-8", errors="ignore") as metadata_file:
+            metadata = json.load(metadata_file)
+
+        statistics = \
+            metadata["tools"][0]["analyzers"]["clangsa"]["analyzer_statistics"]
+        duration = statistics["duration"]
+
+        self.assertEqual(statistics["successful"], len(source_files))
+
+        # Every analyzed translation unit took some time.
+        self.assertGreater(duration["total"], 0)
+        self.assertGreater(duration["min"], 0)
+        self.assertLessEqual(duration["min"], duration["avg"])
+        self.assertLessEqual(duration["avg"], duration["max"])
+
+        # The slowest translation units are reported with their file names.
+        self.assertEqual(len(duration["slowest"]), len(source_files))
+        self.assertEqual(
+            sorted(tu["file"] for tu in duration["slowest"]),
+            sorted(source_files))
+        self.assertEqual(duration["slowest"][0]["duration"], duration["max"])
+
     def test_relative_include_paths(self):
         """
         Test if the build json contains relative paths.

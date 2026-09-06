@@ -217,6 +217,9 @@ class AnalyzeParseTestCase(
 
         post_processed_output = []
         skip_prefixes = ["[] - Analysis length:",
+                         # The analysis time of the translation units
+                         # differs from run to run.
+                         "[] - Analysis time of ",
                          "[] - Previous analysis results",
                          "[] - Skipping input file",
                          # Enabled checkers are listed in the beginning of

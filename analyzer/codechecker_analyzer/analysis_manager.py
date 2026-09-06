@@ -13,9 +13,11 @@ import shlex
 import shutil
 import signal
 import sys
+import time
 import traceback
 import zipfile
 
+from collections import defaultdict
 from functools import lru_cache
 from threading import Timer
 
@@ -35,6 +37,10 @@ from .analyzers.clangsa.analyzer import ClangSA
 from .analyzers.config_handler import CheckerState
 
 LOG = get_logger('analyzer')
+
+# Number of the slowest translation units stored in the metadata
+# file for each analyzer.
+SLOWEST_TU_COUNT = 10
 
 
 def print_analyzer_statistic_summary(metadata_analyzers, status, msg=None):
@@ -57,16 +63,64 @@ def print_analyzer_statistic_summary(metadata_analyzers, status, msg=None):
             LOG.info("  %s: %s", analyzer_type, res)
 
 
+def collect_duration_statistics(durations):
+    """
+    Summarize the analysis time of the translation units of a single analyzer.
+
+    durations -- List of (source file, analysis duration in seconds) tuples.
+
+    Returns the total, the shortest, the longest and the average analysis
+    time of the translation units, and the slowest ones of them. Returns
+    None if no translation unit was analyzed.
+    """
+    if not durations:
+        return None
+
+    times = [duration for _, duration in durations]
+    slowest = sorted(durations, key=lambda d: d[1], reverse=True)
+
+    return {
+        'total': round(sum(times), 3),
+        'min': round(min(times), 3),
+        'max': round(max(times), 3),
+        'avg': round(sum(times) / len(times), 3),
+        'slowest': [{'file': source, 'duration': round(duration, 3)}
+                    for source, duration in slowest[:SLOWEST_TU_COUNT]]}
+
+
+def print_analysis_time_summary(metadata_analyzers):
+    """
+    Print how much time each analyzer spent on the analysis.
+
+    Every line starts with the same phrase, so these lines can easily be
+    filtered out from the output of the analysis.
+    """
+    for analyzer_type, analyzer in metadata_analyzers.items():
+        duration = analyzer.get('analyzer_statistics', {}).get('duration')
+        if not duration:
+            continue
+
+        slowest = duration['slowest'][0]
+        LOG.info("Analysis time of %s: total %.2f sec, average %.2f sec, "
+                 "longest %.2f sec (%s)", analyzer_type, duration['total'],
+                 duration['avg'], duration['max'],
+                 os.path.basename(slowest['file']))
+
+
 def worker_result_handler(results, metadata_tool, output_path):
     """ Print the analysis summary. """
     skipped_num = 0
     reanalyzed_num = 0
     metadata_analyzers = metadata_tool['analyzers']
-    for res, skipped, reanalyzed, analyzer_type, _, sources in results:
+    durations = defaultdict(list)
+    for res, skipped, reanalyzed, analyzer_type, _, sources, duration \
+            in results:
         statistics = metadata_analyzers[analyzer_type]['analyzer_statistics']
         if skipped:
             skipped_num += 1
         else:
+            durations[analyzer_type].append((sources, duration))
+
             if reanalyzed:
                 reanalyzed_num += 1
 
@@ -77,6 +131,10 @@ def worker_result_handler(results, metadata_tool, output_path):
                 statistics['failed'] += 1
                 statistics['failed_sources'].append(sources)
 
+    for analyzer_type, analyzer_durations in durations.items():
+        metadata_analyzers[analyzer_type]['analyzer_statistics']['duration'] \
+            = collect_duration_statistics(analyzer_durations)
+
     LOG.info("----==== Summary ====----")
     print_analyzer_statistic_summary(metadata_analyzers,
                                      'successful',
@@ -85,6 +143,8 @@ def worker_result_handler(results, metadata_tool, output_path):
     print_analyzer_statistic_summary(metadata_analyzers,
                                      'failed',
                                      'Failed to analyze')
+
+    print_analysis_time_summary(metadata_analyzers)
 
     if reanalyzed_num:
         LOG.info("Reanalyzed compilation commands: %d", reanalyzed_num)
@@ -449,6 +509,10 @@ def check(check_data):
     success_dir = output_dirs["success"]
     reproducer_dir = output_dirs["reproducer"]
 
+    # Wall clock time spent on this translation unit. A monotonic clock is
+    # used, because the system time may be adjusted during the analysis.
+    tu_start_time = time.monotonic()
+
     try:
         # If one analysis fails the check fails.
         return_codes = 0
@@ -647,13 +711,13 @@ def check(check_data):
         PROGRESS_CHECKED_NUM.value += 1
 
         return return_codes, False, reanalyzed, action.analyzer_type, \
-            result_file, action.source
+            result_file, action.source, time.monotonic() - tu_start_time
 
     except Exception as e:
         LOG.debug(str(e))
         traceback.print_exc(file=sys.stdout)
         return 1, False, reanalyzed, action.analyzer_type, None, \
-            action.source
+            action.source, time.monotonic() - tu_start_time
 
 
 def skip_cpp(compile_actions, skip_handlers):

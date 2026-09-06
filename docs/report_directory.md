@@ -115,6 +115,14 @@ The `metadata.json` file contains comprehensive information about the analysis r
   - `successful` - Count of successful analyses
   - `successful_sources` - List of successfully analyzed source files
   - `version` - Analyzer version
+  - `duration` - Analysis time of the translation units in seconds. Note that
+    the sum of these is usually more than the wall clock time of the whole
+    analysis, because the translation units are analyzed in parallel.
+    - `total` - Time spent on analyzing all translation units
+    - `min` - Analysis time of the fastest translation unit
+    - `max` - Analysis time of the slowest translation unit
+    - `avg` - Average analysis time of a translation unit
+    - `slowest` - The slowest translation units with their analysis time
 
 ### Example
 
@@ -153,7 +161,19 @@ The `metadata.json` file contains comprehensive information about the analysis r
           "successful_sources": [
             "/workspace/project/src/file.c"
           ],
-          "version": "20.0.0"
+          "version": "20.0.0",
+          "duration": {
+            "total": 7.523,
+            "min": 0.912,
+            "max": 5.204,
+            "avg": 2.508,
+            "slowest": [
+              {
+                "file": "/workspace/project/src/file.c",
+                "duration": 5.204
+              }
+            ]
+          }
         }
       }
     },
